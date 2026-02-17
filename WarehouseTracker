@@ -1,0 +1,90 @@
+import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.web.bind.annotation.*;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.util.*;
+
+@SpringBootApplication
+@RestController
+@RequestMapping("/api/logistics")
+public class WarehouseTrackerApplication {
+
+    // In-memory "Database" for demo purposes
+    private static List<Warehouse> warehouses = new ArrayList<>();
+    private static Map<String, String> driverCurrentState = new HashMap<>(); // DriverID -> LastStatus
+
+    public static void main(String[] args) {
+        loadWarehouseData("warehouses.xlsx");
+        SpringApplication.run(WarehouseTrackerApplication.class, args);
+    }
+
+    // --- 1. THE API ENDPOINT ---
+    @PostMapping("/process-ping")
+    public Map<String, Object> processPing(@RequestBody Map<String, Object> payload) {
+        String driverId = payload.get("driverId").toString();
+        double lat = (double) payload.get("lat");
+        double lon = (double) payload.get("lon");
+        
+        String event = "IN_TRANSIT";
+        String locationName = "None";
+
+        for (Warehouse wh : warehouses) {
+            double distance = calculateDistance(lat, lon, wh.lat, wh.lon);
+            
+            // Logic: 500m Geofence
+            if (distance <= 500) {
+                if (!"AT_WAREHOUSE".equals(driverCurrentState.get(driverId))) {
+                    event = "ARRIVED";
+                    driverCurrentState.put(driverId, "AT_WAREHOUSE");
+                } else {
+                    event = "STATIONARY_AT_WAREHOUSE";
+                }
+                locationName = wh.name;
+                break;
+            } else if ("AT_WAREHOUSE".equals(driverCurrentState.get(driverId))) {
+                event = "LEFT";
+                driverCurrentState.put(driverId, "IN_TRANSIT");
+            }
+        }
+
+        return Map.of("driverId", driverId, "event", event, "location", locationName);
+    }
+
+    // --- 2. GEOSPATIAL LOGIC (Haversine Formula) ---
+    private double calculateDistance(double lat1, double lon1, double lat2, double lon2) {
+        double dLat = Math.toRadians(lat2 - lat1);
+        double dLon = Math.toRadians(lon2 - lon1);
+        double a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                   Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
+                   Math.sin(dLon / 2) * Math.sin(dLon / 2);
+        return 6371000 * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+    }
+
+    // --- 3. EXCEL DATA LOADER ---
+    private static void loadWarehouseData(String fileName) {
+        try (FileInputStream fis = new FileInputStream(new File(fileName));
+             Workbook workbook = new XSSFWorkbook(fis)) {
+            Sheet sheet = workbook.getSheetAt(0);
+            for (Row row : sheet) {
+                if (row.getRowNum() == 0) continue; // Skip header
+                warehouses.add(new Warehouse(
+                    row.getCell(0).getStringCellValue(), // Name
+                    row.getCell(1).getNumericCellValue(), // Lat
+                    row.getCell(2).getNumericCellValue()  // Lon
+                ));
+            }
+            System.out.println("Loaded " + warehouses.size() + " warehouses.");
+        } catch (Exception e) {
+            System.err.println("Error loading Excel: " + e.getMessage());
+        }
+    }
+
+    static class Warehouse {
+        String name; double lat; double lon;
+        Warehouse(String n, double la, double lo) { this.name = n; this.lat = la; this.lon = lo; }
+    }
+}
